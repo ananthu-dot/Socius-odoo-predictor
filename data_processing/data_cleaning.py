@@ -2,6 +2,38 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Tuple, List, Optional
 
+def get_odoo_data() -> Dict[str, pd.DataFrame]:
+    """
+    Gets all required data from Odoo database
+    Returns:
+        Dict[str, pd.DataFrame]: Dictionary containing cleaned datasets.
+        
+    """
+    # TODO: Implement Odoo data retrieval
+    pass
+    
+def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Cleans column names: strips whitespace, converts to lowercase, replaces spaces with underscores.
+
+    Parameters:
+        df (pd.DataFrame): The DataFrame to clean.
+
+    Returns:
+        pd.DataFrame: The DataFrame with cleaned column names.
+    """
+
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.lower()
+        .str.replace(" ", "_")
+        .str.replace("/", "_")
+        .str.replace("-", "_")
+    )
+
+    return df
+
 def validate_data(df: pd.DataFrame, required_columns: List[str]) -> bool:
     """
     Validates that a DataFrame contains all required columns and is not empty.
@@ -32,68 +64,126 @@ def clean_orders(orders_df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Cleaned orders DataFrame.
     """
-    # 1. Validate structure
-    required_cols = ["order_id", "customer_id", "date", "amount_total"]
-    validate_data(orders_df, required_cols)
-    
+    # 0. Make a copy
     cleaned_df = orders_df.copy()
+
+    # 1. Clean column names
+    cleaned_df = clean_columns(cleaned_df)
+
+    # 2. Validate structure
+    required_cols = ["order_date", "order_reference", "customer", "total", "untaxed_amount", "status"]
+    validate_data(cleaned_df, required_cols)
     
-    # 2. Date conversion and handling invalid dates
-    cleaned_df["date"] = pd.to_datetime(cleaned_df["date"], errors="coerce")
-    cleaned_df = cleaned_df.dropna(subset=["date"])
+    # 3. Date conversion and handling invalid dates
+    cleaned_df["order_date"] = pd.to_datetime(cleaned_df["order_date"], errors="coerce")
+    cleaned_df = cleaned_df.dropna(subset=["order_date", "order_reference", "total"])
     
-    # 3. Deduplicate
-    cleaned_df = cleaned_df.drop_duplicates(subset=["order_id"])
+    # 4. Deduplicate
+    cleaned_df = cleaned_df.drop_duplicates(subset=["order_reference"])
     
-    # 4. Fill missing values or drop invalid rows
-    cleaned_df["amount_total"] = pd.to_numeric(cleaned_df["amount_total"], errors="coerce").fillna(0.0)
+    # 5. Fill missing values or drop invalid rows
+    cleaned_df["total"] = pd.to_numeric(cleaned_df["total"], errors="coerce").fillna(0.0)
     
+    # 6. remove non-fulfilled orders Quotation
+    cleaned_df = cleaned_df[cleaned_df["status"] != "Cancelled"]
+    cleaned_df = cleaned_df[cleaned_df["status"] != "Quotation"]
+    cleaned_df = cleaned_df[cleaned_df["status"] != "Quotation Sent"]
+
+    # 7. Standardize customer names
+    cleaned_df["customer"] = (
+        cleaned_df["customer"]
+        .str.split(",", n=1)
+        .str[0]
+        .str.strip()
+    )
+
     return cleaned_df
 
-def clean_order_lines(order_lines_df: pd.DataFrame) -> pd.DataFrame:
+def clean_order_lines(order_lines_df: pd.DataFrame, orders_df: pd.DataFrame) -> pd.DataFrame:
     """
     Cleans raw order line item data (product-level transaction items).
 
     Parameters:
         order_lines_df (pd.DataFrame): Raw order lines DataFrame.
+        orders_df (pd.DataFrame): Cleaned orders DataFrame.
 
     Returns:
         pd.DataFrame: Cleaned order lines DataFrame.
     """
-    required_cols = ["order_line_id", "order_id", "product_id", "qty", "price_unit"]
-    validate_data(order_lines_df, required_cols)
-    
-    cleaned_df = order_lines_df.copy()
-    cleaned_df = cleaned_df.drop_duplicates(subset=["order_line_id"])
-    
-    # Preprocessing numerical columns
-    cleaned_df["qty"] = pd.to_numeric(cleaned_df["qty"], errors="coerce").fillna(0).astype(int)
-    cleaned_df["price_unit"] = pd.to_numeric(cleaned_df["price_unit"], errors="coerce").fillna(0.0)
-    cleaned_df["line_subtotal"] = cleaned_df["qty"] * cleaned_df["price_unit"]
-    
-    return cleaned_df
 
-def clean_products(products_df: pd.DataFrame) -> pd.DataFrame:
+    # 0. Make a copy
+    order_lines_df_clean = order_lines_df.copy()
+
+    # 1. Clean column names
+    order_lines_df_clean = clean_columns(order_lines_df_clean)
+
+    #1. Remove suffix from column names
+    order_lines_df_clean.columns = order_lines_df_clean.columns.str.removeprefix("order_lines_")
+    
+    # 2. Validate structure
+    required_cols = ["order_lines", "order_reference", "quantity", "product", "delivery_quantity", "unit_price", "subtotal", "discount_(%)"]
+    validate_data(order_lines_df_clean, required_cols)
+    
+    # 3. Deduplicate
+    order_lines_df_clean = order_lines_df_clean.drop_duplicates(subset=["order_reference"])
+
+    # 4. Fill missing values or drop invalid rows
+    order_lines_df_clean = order_lines_df_clean.dropna(subset=["quantity", "order_reference", "product","subtotal"])
+    
+    # 5. Filter out order lines that don't have a corresponding order in orders_df
+    order_lines_df_clean = order_lines_df_clean[order_lines_df_clean["order_reference"].isin(orders_df["order_reference"])]
+    
+    return order_lines_df_clean
+
+def clean_products(products_df: pd.DataFrame, product_template_df: pd.DataFrame) -> pd.DataFrame:
     """
     Cleans raw product data (metadata, categories, names).
 
     Parameters:
         products_df (pd.DataFrame): Raw products DataFrame.
+        product_template_df (pd.DataFrame): Raw product template DataFrame.
 
     Returns:
         pd.DataFrame: Cleaned products DataFrame.
     """
-    required_cols = ["product_id", "name", "category_id"]
-    validate_data(products_df, required_cols)
+
+    # 0. Make a copy
+    products_df_clean = products_df.copy()
+    product_template_df_clean = product_template_df.copy()
+
+    # 1. Clean column names
+    products_df_clean = clean_columns(products_df_clean)
+    product_template_df_clean = clean_columns(product_template_df_clean)
+
+    # 2. Remove suffix from column names
+    products_df_clean.columns = products_df_clean.columns.str.removeprefix("product_")
+
+    # 3. Validate structure
+    required_cols = ["internal_reference", "name", "cost", "sales_price", "product_category", "active"]
+    validate_data(products_df_clean, required_cols)
+
+    required_cols = ["internal_reference", "product_category", "name", "sales_price", "cost", "product_type", "unit"]
+    validate_data(product_template_df_clean, required_cols)
     
-    cleaned_df = products_df.copy()
-    cleaned_df = cleaned_df.drop_duplicates(subset=["product_id"])
+    # 4. Deduplicate & drop NA
+    products_df_clean = products_df_clean.drop_duplicates(subset=["internal_reference", ])
+    products_df_clean = products_df_clean.dropna(subset=["internal_reference", "name", "cost", "sales_price"])
     
-    # Standardize string fields
-    cleaned_df["name"] = cleaned_df["name"].fillna("Unknown Product").astype(str).str.strip()
-    cleaned_df["category_id"] = cleaned_df["category_id"].fillna(-1).astype(int)
-    
-    return cleaned_df
+    product_template_df_clean = product_template_df_clean.drop_duplicates(subset=["internal_reference", ])
+    product_template_df_clean = product_template_df_clean.dropna(subset=["internal_reference", "product_category", "name", "sales_price", "cost"])
+
+    # merge products and product templates to get unique product information for all products
+    products_merged_df = products_df_clean.merge(
+        product_template_df_clean,
+        on="internal_reference",
+        how="outer",
+        suffixes=("_prod", "_templ")
+    )
+
+    products_merged_df.drop(columns=["name_templ", "product_category_templ", "sales_price_templ", "cost_templ"], inplace=True)
+    products_merged_df.columns = products_merged_df.columns.str.removesuffix("_prod")
+
+    return products_merged_df
 
 def clean_customers(customers_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -105,16 +195,33 @@ def clean_customers(customers_df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Cleaned customers DataFrame.
     """
-    required_cols = ["customer_id", "name", "email"]
-    validate_data(customers_df, required_cols)
+    # NOTE: customer df might be completely unnecessary as customer names are already included in the orders df
+    # However, if we need more customer information, we can use this df
+
+    # 0. Make a copy
+    customers_df_clean = customers_df.copy()
+
+    # 1. Clean column names
+    customers_df_clean = clean_columns(customers_df_clean)
+
+    # 2. Validate structure
+    required_cols = ["display_name", "country"]
+    validate_data(customers_df_clean, required_cols)
     
-    cleaned_df = customers_df.copy()
-    cleaned_df = cleaned_df.drop_duplicates(subset=["customer_id"])
+    # 3. drop NA
+    customers_df_clean = customers_df_clean.dropna(subset=["display_name", "country"])
     
-    cleaned_df["name"] = cleaned_df["name"].fillna("Guest Customer").astype(str).str.strip()
-    cleaned_df["email"] = cleaned_df["email"].fillna("").astype(str).str.strip().str.lower()
+    # 4. Standardize company names
+    customers_df_clean["company_name"] = customers_df_clean["display_name"].str.split(",", n=1).str[0].str.strip()
     
-    return cleaned_df
+    # 5. Deduplicate based on company name
+    customers_df_clean = (
+        customers_df_clean
+        .sort_values("display_name")
+        .drop_duplicates(subset="company_name", keep="first")
+    )
+    
+    return customers_df_clean
 
 def preprocess_data(df: pd.DataFrame, strategy: str = "mean") -> pd.DataFrame:
     """
@@ -142,6 +249,7 @@ def clean_data(
         order_lines_df (pd.DataFrame): Raw order lines.
         products_df (pd.DataFrame): Raw products.
         customers_df (pd.DataFrame): Raw customers.
+        (all above dfs are raw from Odoo export)
 
     Returns:
         Dict[str, pd.DataFrame]: Dictionary containing cleaned datasets.

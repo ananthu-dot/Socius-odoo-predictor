@@ -18,6 +18,7 @@ DEFAULT_TEST_SIZE = 0.2
 
 # File paths for models and preprocessing artifacts
 REVENUE_MODEL_PATH = MODELS_DIR / "revenue.pkl"
+REVENUE_BEST_PARAMS_PATH = MODELS_DIR / "revenue_best_params.json"
 PRODUCT_MODEL_PATH = MODELS_DIR / "product.pkl"
 REPEAT_PURCHASE_MODEL_PATH = MODELS_DIR / "repeat_purchase.pkl"
 

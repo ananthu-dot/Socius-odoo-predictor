@@ -2,67 +2,123 @@ import pandas as pd
 # pyrefly: ignore [missing-import]
 import numpy as np
 from config.feature_lists import REVENUE_FEATURES
-from data_processing.feature_engineering import create_lag_features, create_rolling_features, extract_datetime_components
 
-def create_monthly_revenue(orders_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregates cleaned orders into a monthly time series format.
-
-    Parameters:
-        orders_df (pd.DataFrame): Cleaned orders DataFrame.
-
-    Returns:
-        pd.DataFrame: Monthly aggregated revenue DataFrame with columns ['year_month', 'revenue', 'total_orders', 'unique_customers'].
-    """
-    df = orders_df.copy()
-    
-    # Extract year_month
-    df["year_month"] = df["date"].dt.to_period("M")
-    
-    monthly = df.groupby("year_month").agg(
-        revenue=("amount_total", "sum"),
-        total_orders=("order_id", "count"),
-        unique_customers=("customer_id", "nunique")
-    ).reset_index()
-    
-    # Sort chronologically
-    monthly = monthly.sort_values("year_month").reset_index(drop=True)
-    return monthly
-
-def create_revenue_features(monthly_revenue_df: pd.DataFrame) -> pd.DataFrame:
+def create_revenue_features(orders_df: pd.DataFrame, order_lines_df: pd.DataFrame) -> pd.DataFrame:
     """
     Generates time-series features (lags, rolling averages, datetime parts) for revenue forecasting.
 
     Parameters:
-        monthly_revenue_df (pd.DataFrame): Monthly aggregated revenue DataFrame.
+        orders_df (pd.DataFrame): orders DataFrame.
+        order_lines_df (pd.DataFrame): order lines DataFrame.
 
     Returns:
         pd.DataFrame: DataFrame containing generated features.
     """
-    df = monthly_revenue_df.copy()
+
+    df = (
+        orders_df
+        .set_index("order_date")
+        .resample("ME")["total"]
+        .sum()
+        .rename("revenue")
+        .to_frame()
+    )
     
-    # Ensure year_month is datetime-like
-    if not isinstance(df["year_month"].dtype, pd.DatetimeTZDtype) and not pd.api.types.is_datetime64_any_dtype(df["year_month"]):
-        df["date_timestamp"] = df["year_month"].dt.to_timestamp()
-    else:
-        df["date_timestamp"] = df["year_month"]
-        
-    df = extract_datetime_components(df, "date_timestamp")
-    
-    # Lags on revenue
-    df = create_lag_features(df, target_col="revenue", lag_steps=[1, 2, 3])
-    df.rename(columns={"revenue_lag_1": "prev_month_revenue", "revenue_lag_2": "revenue_lag_2", "revenue_lag_3": "revenue_lag_3"}, inplace=True)
-    
+    # Calendar features
+    df["month"] = df.index.month
+    df["quarter"] = df.index.quarter
+    df["year"] = df.index.year
+
+    df["month_sin"] = np.sin(2*np.pi*df.index.month/12)
+    df["month_cos"] = np.cos(2*np.pi*df.index.month/12)
+
+    # Lag features
+    df["revenue_lag_1"] = df["revenue"].shift(1)
+    df["revenue_lag_2"] = df["revenue"].shift(2)
+    df["revenue_lag_3"] = df["revenue"].shift(3)
+    df["revenue_lag_6"] = df["revenue"].shift(6)
+
     # Rolling stats
-    # Use shifting by 1 month first to prevent data leakage during rolling calculation for prediction
-    df["revenue_shifted_1"] = df["revenue"].shift(1)
-    df = create_rolling_features(df, target_col="revenue_shifted_1", windows=[3], functions=["mean", "std"])
-    df.rename(columns={"revenue_shifted_1_rolling_mean_3": "rolling_mean_3m", "revenue_shifted_1_rolling_std_3": "rolling_std_3m"}, inplace=True)
-    
-    # Drop intermediate columns
-    df.drop(columns=["revenue_shifted_1", "date_timestamp"], inplace=True, errors="ignore")
-    
-    # Fill any NaNs resulting from lags/rolling calculations
-    df = df.fillna(0.0)
+    df["rolling_mean_3"] = (
+        df["revenue"]
+        .rolling(3)
+        .mean()
+    )
+
+    df["rolling_mean_6"] = (
+        df["revenue"]
+        .rolling(6)
+        .mean()
+    )
+
+    df["rolling_std_3"] = (
+        df["revenue"]
+        .rolling(3)
+        .std()
+    )
+
+    # Business Feaures
+
+    # Monthly order count
+    monthly_orders = (
+        orders_df
+        .set_index("order_date")
+        .resample("ME")
+        .size()
+    )
+
+    # Monthly Customers
+    monthly_customers = (
+        orders_df
+        .set_index("order_date")
+        .resample("ME")["customer"]
+        .nunique()
+    )
+
+    # Merge data
+    orders_and_lines = orders_df.merge(order_lines_df, how='inner', on='order_reference')
+
+    # Num unique products sold a month
+    monthly_products = (
+        orders_and_lines
+        .set_index("order_date")
+        .resample("ME")["product"]
+        .nunique()
+    )
+
+    # total monthly units sold
+    monthly_units = (
+        orders_and_lines
+        .set_index("order_date")
+        .resample("ME")["quantity"]
+        .sum()
+    )
+
+    # Shift features 
+
+    for lag in [1, 3, 6]:
+
+        df[f"order_count_lag_{lag}"] = (
+            monthly_orders.shift(lag)
+        )
+
+        df[f"active_customers_lag_{lag}"] = (
+            monthly_customers.shift(lag)
+        )
+
+        df[f"unique_products_lag_{lag}"] = (
+            monthly_products.shift(lag)
+        )
+
+        df[f"units_lag_{lag}"] = (
+            monthly_units.shift(lag)
+        )
+
+        df[f"avg_order_value_lag_{lag}"] = (
+            df[f"revenue_lag_{lag}"] /
+            df[f"order_count_lag_{lag}"]
+        )
+
+    df = df.dropna()
     
     return df

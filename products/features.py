@@ -1,70 +1,180 @@
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import LabelEncoder
 from config.feature_lists import PRODUCT_FEATURES
-from data_processing.feature_engineering import create_lag_features, create_rolling_features, extract_datetime_components
 
 def create_product_features(order_lines_df: pd.DataFrame, orders_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Builds product-level historical features from raw transactions.
+    Generates product-level monthly time-series features for demand forecasting.
 
     Parameters:
-        order_lines_df (pd.DataFrame): Cleaned order lines.
-        orders_df (pd.DataFrame): Cleaned orders.
+        order_lines_df (pd.DataFrame): Cleaned order lines DataFrame.
+        orders_df (pd.DataFrame): Cleaned orders DataFrame.
 
     Returns:
-        pd.DataFrame: DataFrame containing product feature records.
+        pd.DataFrame: Processed product features DataFrame.
     """
-    # Merge order lines with orders to get order dates
-    transactions = pd.merge(
-        order_lines_df,
-        orders_df[["order_id", "date"]],
-        on="order_id",
-        how="inner"
+    transactions = order_lines_df.merge(
+        orders_df[['order_reference', 'order_date']],
+        on='order_reference',
+        how='left'
+    )
+
+    transactions["month"] = (
+        transactions["order_date"]
+        .dt.to_period("M")
+        .dt.to_timestamp()
+    )
+
+    # Drop unnecessary cols if present
+    cols_to_drop = [c for c in ['order_lines', 'product', 'delivery_quantity', 'product_internal_ref'] if c in transactions.columns]
+    if cols_to_drop:
+        transactions.drop(columns=cols_to_drop, inplace=True)
+
+    # Format data for XGB
+    monthly_products = (
+        transactions
+        .groupby(
+            ["product_name", "product_category", "month"],
+            as_index=False
+        )
+        .agg(
+            units_sold=("quantity", "sum"),
+            revenue=("subtotal", "sum"),
+            order_count=("order_reference", "nunique")
+        )
     )
     
-    # Aggregate to weekly/monthly product demand
-    transactions["date_weekly"] = transactions["date"].dt.to_period("W").dt.to_timestamp()
-    
-    product_weekly = transactions.groupby(["product_id", "date_weekly"]).agg(
-        qty_demanded=("qty", "sum"),
-        revenue_generated=("line_subtotal", "sum")
-    ).reset_index()
-    
-    # Sort chronologically within products
-    product_weekly = product_weekly.sort_values(["product_id", "date_weekly"]).reset_index(drop=True)
-    
-    # Add calendar components
-    product_weekly = extract_datetime_components(product_weekly, "date_weekly")
-    
-    # Add dummy price column for feature matching
-    product_weekly["price"] = product_weekly["revenue_generated"] / (product_weekly["qty_demanded"] + 1e-5)
-    
-    # Generate lag features
-    product_weekly = create_lag_features(
-        product_weekly, 
-        target_col="qty_demanded", 
-        lag_steps=[1, 4], 
-        group_col="product_id"
+    # Fill months with no data with 0
+    completed_products = []
+
+    # Loop through each product, find date range
+    for product, group in monthly_products.groupby("product_name"):
+        start = group["month"].min()
+        end = group["month"].max()
+
+        if pd.isna(start) or pd.isna(end):
+            continue
+
+        all_months = pd.date_range(
+            start=start,
+            end=end,
+            freq="MS"
+        )
+
+        product_df = pd.DataFrame({
+            "month": all_months
+        })
+
+        product_df["product_name"] = product
+
+        # Get product with months that it was sold
+        product_df = product_df.merge(
+            group,
+            on=["product_name", "month"],
+            how="left"
+        )
+
+        # Fill missing months with 0
+        product_df["units_sold"] = product_df["units_sold"].fillna(0)
+        product_df["revenue"] = product_df["revenue"].fillna(0)
+        product_df["order_count"] = product_df["order_count"].fillna(0)
+
+        # Filling category for new rows
+        product_df["product_category"] = group["product_category"].iloc[0]
+
+        completed_products.append(product_df)
+
+    if not completed_products:
+        return pd.DataFrame()
+
+    monthly_products = pd.concat(
+        completed_products,
+        ignore_index=True
     )
-    product_weekly.rename(columns={"qty_demanded_lag_1": "lag_1w_demand", "qty_demanded_lag_4": "lag_4w_demand"}, inplace=True)
-    
-    # Generate rolling features
-    # Shift by 1 first to avoid data leakage
-    product_weekly["qty_demanded_shifted_1"] = product_weekly.groupby("product_id")["qty_demanded"].shift(1)
-    product_weekly = create_rolling_features(
-        product_weekly, 
-        target_col="qty_demanded_shifted_1", 
-        windows=[4], 
-        functions=["mean"], 
-        group_col="product_id"
+
+    # Lag features
+    for lag in [1, 2, 3, 6]:
+        monthly_products[f"units_lag_{lag}"] = (
+            monthly_products
+            .groupby("product_name")["units_sold"]
+            .shift(lag)
+        )
+
+    for lag in [1, 3, 6]:
+        monthly_products[f"revenue_lag_{lag}"] = (
+            monthly_products
+            .groupby("product_name")["revenue"]
+            .shift(lag)
+        )
+
+    for lag in [1, 3]:
+        monthly_products[f"orders_lag_{lag}"] = (
+            monthly_products
+            .groupby("product_name")["order_count"]
+            .shift(lag)
+        )
+
+    # Rolling stats
+    monthly_products["rolling_mean_3"] = (
+        monthly_products
+        .groupby("product_name")["units_sold"]
+        .transform(
+            lambda s: s.shift(1).rolling(3).mean()
+        )
     )
-    product_weekly.rename(columns={"qty_demanded_shifted_1_rolling_mean_4": "rolling_mean_4w"}, inplace=True)
-    
-    # Drop temp cols
-    product_weekly.drop(columns=["qty_demanded_shifted_1"], inplace=True, errors="ignore")
-    
-    # Add a stub placeholder for category_id if not present
-    if "category_id" not in product_weekly.columns:
-        product_weekly["category_id"] = 0
-        
-    return product_weekly.fillna(0.0)
+
+    monthly_products["rolling_mean_6"] = (
+        monthly_products
+        .groupby("product_name")["units_sold"]
+        .transform(
+            lambda s: s.shift(1).rolling(6).mean()
+        )
+    )
+
+    monthly_products["rolling_std_3"] = (
+        monthly_products
+        .groupby("product_name")["units_sold"]
+        .transform(
+            lambda s: s.shift(1).rolling(3).std()
+        )
+    )
+
+    # Calendar features
+    monthly_products["year"] = monthly_products["month"].dt.year
+    monthly_products["month_num"] = monthly_products["month"].dt.month
+    monthly_products["quarter"] = monthly_products["month"].dt.quarter
+
+    # Cyclic encoding
+    monthly_products["month_sin"] = np.sin(2 * np.pi * monthly_products["month_num"] / 12)
+    monthly_products["month_cos"] = np.cos(2 * np.pi * monthly_products["month_num"] / 12)
+
+    # Label encoder for product name
+    product_encoder = LabelEncoder()
+    monthly_products["product_id"] = product_encoder.fit_transform(
+        monthly_products["product_name"]
+    )
+
+    # One Hot encoder for product category
+    monthly_products = pd.get_dummies(
+        monthly_products,
+        columns=["product_category"],
+        dtype=int
+    )
+
+    # Filter out very low selling items
+    product_totals = (
+        monthly_products
+        .groupby("product_name")["units_sold"]
+        .sum()
+    )
+
+    products_to_keep = product_totals[
+        product_totals >= 50
+    ].index
+
+    monthly_products = monthly_products[
+        monthly_products["product_name"].isin(products_to_keep)
+    ].copy()
+
+    return monthly_products.dropna()

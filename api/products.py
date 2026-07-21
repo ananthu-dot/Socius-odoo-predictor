@@ -31,7 +31,7 @@ def api_train_product(payload: Dict[str, Any]) -> Dict[str, Any]:
 def api_predict_product(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     POST /api/products/predict
-    Predicts next timeframe's quantity demanded for all products.
+    Predicts next timeframe's quantity demanded for products (optionally filtered by product_name).
     """
     if "order_lines" not in payload or "orders" not in payload:
         return {"error": "Missing data."}
@@ -39,8 +39,9 @@ def api_predict_product(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         order_lines_df = pd.DataFrame(payload["order_lines"])
         orders_df = pd.DataFrame(payload["orders"])
+        product_name = payload.get("product_name")
         
-        preds_df = predict_product(order_lines_df, orders_df)
+        preds_df = predict_product(order_lines_df, orders_df, product_name=product_name)
         return {
             "status": "success",
             "predictions": preds_df.to_dict(orient="records")
@@ -51,7 +52,7 @@ def api_predict_product(payload: Dict[str, Any]) -> Dict[str, Any]:
 def api_forecast_product(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     POST /api/products/forecast
-    Forecasts multi-period product demand.
+    Forecasts multi-period product demand (optionally filtered by product_name).
     """
     if "order_lines" not in payload or "orders" not in payload:
         return {"error": "Missing data."}
@@ -59,9 +60,10 @@ def api_forecast_product(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         order_lines_df = pd.DataFrame(payload["order_lines"])
         orders_df = pd.DataFrame(payload["orders"])
+        product_name = payload.get("product_name")
         steps = payload.get("steps", 4)
         
-        forecast_df = forecast_product(order_lines_df, orders_df, steps=steps)
+        forecast_df = forecast_product(order_lines_df, orders_df, product_name=product_name, steps=steps)
         return {
             "status": "success",
             "forecasts": forecast_df.to_dict(orient="records")

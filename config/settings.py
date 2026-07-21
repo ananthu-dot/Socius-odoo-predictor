@@ -20,6 +20,8 @@ DEFAULT_TEST_SIZE = 0.2
 REVENUE_MODEL_PATH = MODELS_DIR / "revenue.pkl"
 REVENUE_BEST_PARAMS_PATH = MODELS_DIR / "revenue_best_params.json"
 PRODUCT_MODEL_PATH = MODELS_DIR / "product.pkl"
+PRODUCT_BEST_PARAMS_PATH = MODELS_DIR / "product_best_params.json"
+PRODUCT_FEATURE_LIST_PATH = MODELS_DIR / "product_features.json"
 REPEAT_PURCHASE_MODEL_PATH = MODELS_DIR / "repeat_purchase.pkl"
 
 REVENUE_ENCODER_PATH = MODELS_DIR / "revenue_encoder.pkl"

@@ -27,6 +27,15 @@ PRODUCT_PARAMS = {
     "random_state": 42
 }
 
+# Param grid for product model GridSearchCV
+PRODUCT_PARAM_GRID = {
+    "n_estimators":    [100, 200, 300],
+    "learning_rate":   [0.01, 0.05, 0.1],
+    "max_depth":       [3, 4, 5, 6],
+    "subsample":       [0.7, 0.8, 0.9, 1.0],
+    "colsample_bytree":[0.7, 0.8, 0.9, 1.0],
+}
+
 # Default Repeat Purchase Model Parameters (e.g., Random Forest Classifier)
 CUSTOMER_PARAMS = {
     "n_estimators": 100,

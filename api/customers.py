@@ -3,8 +3,7 @@ from typing import Dict, Any
 import pandas as pd
 from customers.segmentation import segment_customers
 from customers.repeat_purchase import predict_repeat_purchase, train_repeat_purchase_model
-from customers.activity_score import calculate_activity_score
-from customers.risk_score import calculate_risk_score
+from customers.customer_scores import calculate_activity_score
 
 def api_train_customer_model(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -28,7 +27,6 @@ def api_analyze_customers(payload: Dict[str, Any]) -> Dict[str, Any]:
     - Segments
     - Repeat purchase probabilities
     - Activity/Engagement scores
-    - Attrition risk scores
     """
     if "orders" not in payload:
         return {"error": "Missing key 'orders' in request body."}
@@ -36,23 +34,22 @@ def api_analyze_customers(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         orders_df = pd.DataFrame(payload["orders"])
         
-        # 1. Segments
+        # 1. Segments — returns ["customer", "segment"]
         segments_df = segment_customers(orders_df)
         
-        # 2. Repeat purchase
+        # 2. Repeat purchase — returns ["customer_id", "repeat_probability"]
+        # Note: repeat_purchase still uses old schema; key as "customer" for merging
         repeat_df = predict_repeat_purchase(orders_df)
-        
-        # 3. Activity score
+        if "customer_id" in repeat_df.columns:
+            repeat_df = repeat_df.rename(columns={"customer_id": "customer"})
+
+        # 3. Activity score — returns ["customer", "activity_score"]
         activity_df = calculate_activity_score(orders_df)
-        
-        # 4. Risk score
-        risk_df = calculate_risk_score(orders_df)
-        
-        # Merge all metrics together
-        merged = pd.merge(segments_df, repeat_df, on="customer_id", how="outer")
-        merged = pd.merge(merged, activity_df, on="customer_id", how="outer")
-        merged = pd.merge(merged, risk_df, on="customer_id", how="outer")
-        
+
+        # Merge all metrics together on "customer"
+        merged = pd.merge(segments_df, repeat_df, on="customer", how="outer")
+        merged = pd.merge(merged, activity_df, on="customer", how="outer")
+
         return {
             "status": "success",
             "customer_analysis": merged.to_dict(orient="records")

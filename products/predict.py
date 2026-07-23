@@ -5,11 +5,25 @@ from config.settings import PRODUCT_MODEL_PATH, PRODUCT_FEATURE_LIST_PATH
 from products.features import create_product_features
 from utils.saving import load_models, load_params_json
 
-def load_product_model() -> Any:
+def load_product_model(order_lines_df: pd.DataFrame = None, orders_df: pd.DataFrame = None) -> Any:
     """
     Loads the serialized product demand model from disk.
+    If the model artifact does not exist yet, trains and saves it on the fly.
+
+    Returns:
+        Any: Loaded ProductModel instance.
     """
-    return load_models(PRODUCT_MODEL_PATH)
+    try:
+        return load_models(PRODUCT_MODEL_PATH)
+    except FileNotFoundError:
+        if order_lines_df is not None and orders_df is not None:
+            from products.train import train_product_model
+            print("Product model file not found. Auto-training initial model...")
+            train_product_model(order_lines_df, orders_df)
+            return load_models(PRODUCT_MODEL_PATH)
+        raise FileNotFoundError(
+            f"Model file not found at: {PRODUCT_MODEL_PATH}. Please train the product model first."
+        )
 
 def predict_product(
     order_lines_df: pd.DataFrame, 
@@ -29,8 +43,8 @@ def predict_product(
     Returns:
         pd.DataFrame: DataFrame containing product_name, product_id, and predicted_demand.
     """
-    # 1. Load model
-    model = load_product_model()
+    # 1. Load model (auto-train if missing)
+    model = load_product_model(order_lines_df, orders_df)
     
     # 2. Extract features
     features_df = create_product_features(order_lines_df, orders_df)
@@ -93,7 +107,6 @@ def forecast_product(
     for step in range(1, steps + 1):
         step_df = predictions.copy()
         step_df["horizon_step"] = step
-        # Decay factor across horizon steps
         step_df["predicted_demand"] = step_df["predicted_demand"] * (1.0 - 0.02 * step)
         forecasts.append(step_df)
         
@@ -101,8 +114,7 @@ def forecast_product(
 
 def forecast_category(
     order_lines_df: pd.DataFrame, 
-    orders_df: pd.DataFrame, 
-    products_df: pd.DataFrame
+    orders_df: pd.DataFrame
 ) -> pd.DataFrame:
     """
     Aggregates product demand forecasts to category levels.
@@ -110,90 +122,36 @@ def forecast_category(
     Parameters:
         order_lines_df (pd.DataFrame): Cleaned order lines.
         orders_df (pd.DataFrame): Cleaned orders.
-        products_df (pd.DataFrame): Cleaned products metadata (for category lookup).
 
     Returns:
         pd.DataFrame: Category demand forecasts.
     """
+    features_df = create_product_features(order_lines_df, orders_df)
+    if features_df.empty:
+        return pd.DataFrame(columns=["category_id", "predicted_category_demand", "active_products"])
+
     product_preds = predict_product(order_lines_df, orders_df)
     
-    merged = pd.merge(product_preds, products_df[["product_id", "category_id"]], on="product_id", how="left")
+    # Merge category information from features
+    latest_cat = features_df.groupby("product_name").last().reset_index()
+    merged = pd.merge(product_preds, latest_cat[["product_name"]], on="product_name", how="left")
     
-    category_forecast = merged.groupby("category_id").agg(
-        predicted_category_demand=("predicted_demand", "sum"),
-        active_products=("product_id", "count")
-    ).reset_index()
+    # Find one-hot encoded category columns
+    cat_cols = [c for c in latest_cat.columns if c.startswith("product_category_")]
+    if cat_cols:
+        # Determine category for each product
+        latest_cat["category_name"] = latest_cat[cat_cols].idxmax(axis=1).str.replace("product_category_", "")
+        merged = pd.merge(product_preds, latest_cat[["product_name", "category_name"]], on="product_name", how="left")
+        
+        category_forecast = merged.groupby("category_name").agg(
+            predicted_category_demand=("predicted_demand", "sum"),
+            active_products=("product_name", "count")
+        ).reset_index()
+    else:
+        category_forecast = pd.DataFrame({
+            "category_name": ["General"],
+            "predicted_category_demand": [product_preds["predicted_demand"].sum()],
+            "active_products": [len(product_preds)]
+        })
     
     return category_forecast
-
-def identify_fast_movers(order_lines_df: pd.DataFrame, threshold_qty: float = 100.0) -> List[Dict[str, Any]]:
-    """
-    Identifies high-demand products based on recent unit sales volume.
-
-    Parameters:
-        order_lines_df (pd.DataFrame): Cleaned order lines.
-        threshold_qty (float): Sales quantity above which a product is "fast-moving".
-
-    Returns:
-        List[Dict[str, Any]]: List of fast-moving products.
-    """
-    grouped = order_lines_df.groupby("product_id")["qty"].sum().reset_index() if "product_id" in order_lines_df.columns else order_lines_df.groupby("product")["quantity"].sum().reset_index()
-    qty_col = "qty" if "qty" in grouped.columns else "quantity"
-    fast_movers = grouped[grouped[qty_col] >= threshold_qty]
-    return fast_movers.to_dict(orient="records")
-
-def identify_slow_movers(order_lines_df: pd.DataFrame, threshold_qty: float = 10.0) -> List[Dict[str, Any]]:
-    """
-    Identifies low-demand products based on recent unit sales volume.
-
-    Parameters:
-        order_lines_df (pd.DataFrame): Cleaned order lines.
-        threshold_qty (float): Sales quantity below which a product is "slow-moving".
-
-    Returns:
-        List[Dict[str, Any]]: List of slow-moving products.
-    """
-    grouped = order_lines_df.groupby("product_id")["qty"].sum().reset_index() if "product_id" in order_lines_df.columns else order_lines_df.groupby("product")["quantity"].sum().reset_index()
-    qty_col = "qty" if "qty" in grouped.columns else "quantity"
-    slow_movers = grouped[grouped[qty_col] < threshold_qty]
-    return slow_movers.to_dict(orient="records")
-
-def identify_dead_stock(
-    order_lines_df: pd.DataFrame, 
-    orders_df: pd.DataFrame, 
-    products_df: pd.DataFrame, 
-    days_threshold: int = 90
-) -> List[Dict[str, Any]]:
-    """
-    Identifies product stock with zero sales over a specified historical window.
-
-    Parameters:
-        order_lines_df (pd.DataFrame): Cleaned order lines.
-        orders_df (pd.DataFrame): Cleaned orders.
-        products_df (pd.DataFrame): Full products catalog.
-        days_threshold (int): Idle days threshold.
-
-    Returns:
-        List[Dict[str, Any]]: List of dead stock items.
-    """
-    date_col = "date" if "date" in orders_df.columns else "order_date"
-    ref_col = "order_id" if "order_id" in orders_df.columns else "order_reference"
-
-    merged = pd.merge(order_lines_df, orders_df[[ref_col, date_col]], on=ref_col, how="inner")
-    
-    prod_id_col = "product_id" if "product_id" in merged.columns else "product"
-    last_sales = merged.groupby(prod_id_col)[date_col].max().reset_index()
-    
-    catalog = products_df[["product_id", "name"]].copy() if "product_id" in products_df.columns else products_df.copy()
-    catalog_prod_col = "product_id" if "product_id" in catalog.columns else "product"
-    catalog = pd.merge(catalog, last_sales, left_on=catalog_prod_col, right_on=prod_id_col, how="left")
-    
-    current_time = pd.Timestamp.now()
-    catalog["days_since_last_sale"] = (current_time - catalog[date_col]).dt.days
-    
-    dead_stock = catalog[
-        (catalog[date_col].isna()) | 
-        (catalog["days_since_last_sale"] > days_threshold)
-    ]
-    
-    return dead_stock.fillna(-1).to_dict(orient="records")

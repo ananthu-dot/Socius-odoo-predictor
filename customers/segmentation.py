@@ -1,56 +1,115 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, Any
-from customers.features import create_customer_features
+from customers.features import create_customer_segment_features
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 
-def segment_customers(orders_df: pd.DataFrame) -> pd.DataFrame:
+def segment_customers(orders_df: pd.DataFrame, desired_features: list[str] = None, k: int = 4) -> pd.DataFrame:
     """
-    Assigns customers into segments (e.g., Champions, Loyal, At Risk, Hibernating)
-    using RFM quantile scores.
+    Clusters customers into segments based on their RFM (Recency, Frequency, Monetary) values.
 
-    Parameters:
-        orders_df (pd.DataFrame): Cleaned orders.
+    Args:
+        orders_df (pd.DataFrame): DataFrame containing order information.
+        desired_features (list[str], optional): List of features to use for clustering.
+            If None, uses default features from create_customer_segment_features.
+            Defaults to None.
+        k (int, optional): Number of clusters to create.
+            Defaults to 4.
 
     Returns:
-        pd.DataFrame: DataFrame containing customer_id, RFM scores, and segment label.
+        pd.DataFrame: DataFrame with customer segments.
     """
-    # 1. Generate features
-    features = create_customer_features(orders_df)
-    
-    if features.empty:
-        return pd.DataFrame(columns=["customer_id", "recency", "frequency", "monetary_value", "segment"])
-        
-    # 2. Compute quintiles for Recency, Frequency, and Monetary (1-5 score)
-    # Recency: Lower is better, so label 5 is lowest recency days, label 1 is highest recency days
-    # Frequency & Monetary: Higher is better, so label 5 is highest frequency/monetary, label 1 is lowest
-    
-    # Use qcut with handles for duplicates
-    def safe_qcut(series, q=5):
-        try:
-            return pd.qcut(series, q=q, labels=False, duplicates="drop") + 1
-        except Exception:
-            # Fallback if there are too few unique values for quantiles
-            ranks = series.rank(method="first")
-            return pd.qcut(ranks, q=q, labels=False) + 1
+    customer_features = create_customer_segment_features(orders_df)  
 
-    features["R_score"] = safe_qcut(features["recency"], 5).map({1:5, 2:4, 3:3, 4:2, 5:1})
-    features["F_score"] = safe_qcut(features["frequency"], 5)
-    features["M_score"] = safe_qcut(features["monetary_value"], 5)
+    if desired_features:
+        X = customer_features[desired_features]
+    else:
+        X = customer_features
     
-    # 3. Simple heuristic rules for segment classification
-    # Concatenate R and F scores
-    features["RF"] = features["R_score"].astype(str) + features["F_score"].astype(str)
-    
-    segment_map = {
-        r"[4-5][4-5]": "Champions",
-        r"[2-4][3-5]": "Loyal Customers",
-        r"[3-5][1-2]": "Recent / Promising",
-        r"[1-2][3-5]": "At Risk / Slipping",
-        r"[1-2][1-2]": "Hibernating / Churned"
-    }
-    
-    features["segment"] = "Standard Customers"
-    for pattern, label in segment_map.items():
-        features.loc[features["RF"].str.match(pattern), "segment"] = label
+    # Apply log transformation to account for skew
+    customer_features["monetary"] = np.log1p(customer_features["monetary"])
+    customer_features["avg_order_value"] = np.log1p(customer_features["avg_order_value"])
+    customer_features["total_units"] = np.log1p(customer_features["total_units"])
+
+    # Scale fatures (accounts for large differences in scale)
+    scaler = StandardScaler()
+
+    X_scaled = scaler.fit_transform(X)
+
+    # Train Model
+    kmeans = KMeans(
+        n_clusters=k,
+        random_state=42,
+        n_init=20
+    )
+
+    customer_features["cluster"] = (
+        kmeans.fit_predict(X_scaled)
+    )
+
+    # Determine optimal segment names by sorting clusters
+    cluster_summary = (
+        customer_features
+        .groupby("cluster")
+        .agg(
+            frequency=("frequency", "mean"),
+            monetary=("monetary", "mean"),
+            recency=("recency", "mean")
+        )
+    )
+
+    # Add a composite score for ranking segments (frequency x monetary)
+    cluster_summary["score"] = (
+        cluster_summary["frequency"]
+        * cluster_summary["monetary"]
+    )
+
+    # Map clusters to segment names based on score (high to low)
+    cluster_summary = cluster_summary.sort_values(
+        "score",
+        ascending=False
+    )
+
+    if k == 4:
+        labels = [
+            "VIP Customers",
+            "Loyal Customers",
+            "Regular Customers",
+            "At Risk Customers"
+        ]
+
+    elif k == 3:
+        labels = [
+            "VIP Customers",
+            "Loyal Customers",
+            "At Risk Customers"
+        ]
+
+    elif k == 5:
+        labels = [
+            "VIP Customers",
+            "Loyal Customers",
+            "Regular Customers",
+            "Occasional Customers",
+            "At Risk Customers"
+        ]
+
+    if k in [4, 3, 5]:
+        mapping = {}
+
+        for label, cluster in zip(labels, cluster_summary.index):
+            mapping[cluster] = label
+
+    else:
+        # Fallback to default labeling if k is not 3, 4, or 5
+        labels = [f"Segment {i}" for i in range(k)]
         
-    return features[["customer_id", "recency", "frequency", "monetary_value", "segment"]]
+        mapping = {}
+
+        for label, cluster in zip(labels, cluster_summary.index):
+            mapping[cluster] = label
+
+    customer_features["segment"] = customer_features["cluster"].map(mapping)
+
+    return customer_features.reset_index()[["customer", "segment"]]

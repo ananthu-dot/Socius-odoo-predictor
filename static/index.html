@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socius Odoo Predictor — AI Analytics & Forecasting</title>
+  <!-- Google Fonts & Chart.js -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-container">
+    
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">✨</div>
+        <div class="brand-text">
+          <h1>Socius Predictor</h1>
+          <span class="subtitle">Odoo Intelligence & Forecasting Dashboard</span>
+        </div>
+      </div>
+
+      <!-- Dataset Bar -->
+      <div class="data-status-card">
+        <div class="status-indicator" id="dataStatusDot"></div>
+        <div class="data-info">
+          <span class="data-label" id="dataStatusText">No Data Loaded</span>
+          <span class="data-sub" id="dataStatusDetails">Click button to populate demo data</span>
+        </div>
+        <button class="btn btn-primary btn-sm" id="loadSampleDataBtn">
+          ⚡ Load Sample Data
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="revenue">
+        <span class="tab-icon">📈</span> Revenue Forecasting
+      </button>
+      <button class="nav-tab" data-tab="product">
+        <span class="tab-icon">📦</span> Product Demand
+      </button>
+      <button class="nav-tab" data-tab="customer">
+        <span class="tab-icon">👥</span> Customer Analytics
+      </button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+
+      <!-- ================= REVENUE SECTION ================= -->
+      <section class="tab-content active" id="revenue-tab">
+        <div class="section-grid">
+          
+          <!-- Control Panel -->
+          <div class="card control-card">
+            <h3>⚙️ Revenue Controls</h3>
+            <p class="card-desc">Predict next month or generate recursive multi-month forecasts.</p>
+            
+            <div class="form-group">
+              <label for="revenueMonths">Forecast Horizon (Months)</label>
+              <div class="range-container">
+                <input type="range" id="revenueMonths" min="1" max="12" value="6" step="1">
+                <span class="range-val" id="revenueMonthsVal">6 months</span>
+              </div>
+            </div>
+
+            <div class="button-group">
+              <button class="btn btn-gradient" id="predictRevenueBtn">
+                🚀 Predict Next Month
+              </button>
+              <button class="btn btn-secondary" id="forecastRevenueBtn">
+                📅 Forecast Multi-Month
+              </button>
+              <button class="btn btn-outline" id="trainRevenueBtn">
+                🔄 Retrain Model
+              </button>
+            </div>
+          </div>
+
+          <!-- KPI Cards -->
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <span class="kpi-title">Next Month Revenue</span>
+              <div class="kpi-value" id="kpiRevenueNext">$0.00</div>
+              <span class="kpi-badge positive" id="kpiRevenueBadge">--</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-title">Average Monthly Forecast</span>
+              <div class="kpi-value" id="kpiRevenueAvg">$0.00</div>
+              <span class="kpi-sub">Across selected horizon</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-title">Total Projected Revenue</span>
+              <div class="kpi-value" id="kpiRevenueTotal">$0.00</div>
+              <span class="kpi-sub" id="kpiHorizonSub">6-Month Total</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Chart Container -->
+        <div class="card chart-card">
+          <div class="chart-header">
+            <h4>📈 Revenue Trajectory & Forecast</h4>
+            <div class="chart-legend-pills">
+              <span class="pill pill-actual">Historical Revenue</span>
+              <span class="pill pill-forecast">XGBoost Forecast</span>
+            </div>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="revenueChart"></canvas>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ================= PRODUCT SECTION ================= -->
+      <section class="tab-content" id="product-tab">
+        <div class="section-grid">
+          
+          <!-- Control Panel -->
+          <div class="card control-card">
+            <h3>⚙️ Product Demand Controls</h3>
+            <p class="card-desc">Forecast demand by product item, category, or filter individually.</p>
+            
+            <div class="form-group">
+              <label for="productSelectMode">Forecast Mode</label>
+              <select id="productSelectMode" class="form-select">
+                <option value="all">All Products (Next Period)</option>
+                <option value="single">Single Specific Product</option>
+                <option value="multistep">Multi-Step Horizon Forecast</option>
+                <option value="category">Aggregate Category Forecast</option>
+              </select>
+            </div>
+
+            <div class="form-group" id="productNameGroup" style="display: none;">
+              <label for="productNameInput">Target Product Name</label>
+              <input type="text" id="productNameInput" class="form-input" placeholder="e.g. Enterprise Server X1">
+            </div>
+
+            <div class="form-group" id="productStepsGroup" style="display: none;">
+              <label for="productSteps">Horizon Steps (Months/Weeks)</label>
+              <input type="number" id="productSteps" class="form-input" min="1" max="6" value="4">
+            </div>
+
+            <div class="button-group">
+              <button class="btn btn-gradient" id="runProductBtn">
+                📊 Run Product Demand
+              </button>
+              <button class="btn btn-outline" id="trainProductBtn">
+                🔄 Retrain Product Model
+              </button>
+            </div>
+          </div>
+
+          <!-- KPI Grid for Product -->
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <span class="kpi-title">Total Demand Forecast</span>
+              <div class="kpi-value" id="kpiProductTotalQty">0 units</div>
+              <span class="kpi-sub">Next Period Total</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-title">Top Demanded Item</span>
+              <div class="kpi-value kpi-sm" id="kpiProductTopName">None</div>
+              <span class="kpi-sub" id="kpiProductTopQty">0 units</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-title">Active Products Tracked</span>
+              <div class="kpi-value" id="kpiProductActiveCount">0</div>
+              <span class="kpi-sub">In Catalog</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Product Visualization -->
+        <div class="card chart-card">
+          <div class="chart-header">
+            <h4 id="productChartTitle">📦 Predicted Demand by Product</h4>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="productChart"></canvas>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ================= CUSTOMER SECTION ================= -->
+      <section class="tab-content" id="customer-tab">
+        <div class="section-grid">
+          
+          <!-- Control Panel -->
+          <div class="card control-card">
+            <h3>⚙️ Customer Analytics Controls</h3>
+            <p class="card-desc">RFM Clustering, repeat purchase probabilities, & activity scoring.</p>
+            
+            <div class="notice-box">
+              <span>ℹ️ Customer scoring module is in active development. Basic RFM segmentation & repeat model analysis are available.</span>
+            </div>
+
+            <div class="button-group">
+              <button class="btn btn-gradient" id="analyzeCustomersBtn">
+                🔍 Run Customer Analysis
+              </button>
+              <button class="btn btn-outline" id="trainCustomerBtn">
+                🔄 Retrain Repeat Model
+              </button>
+            </div>
+          </div>
+
+          <!-- KPI Cards for Customer -->
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <span class="kpi-title">Analyzed Customers</span>
+              <div class="kpi-value" id="kpiCustomerTotal">0</div>
+              <span class="kpi-sub">Total Active Cohort</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-title">VIP / Champion Ratio</span>
+              <div class="kpi-value" id="kpiCustomerVipRatio">0%</div>
+              <span class="kpi-sub" id="kpiCustomerVipCount">0 Champions</span>
+            </div>
+            <div class="kpi-card">
+              <span class="kpi-title">Avg Repeat Probability</span>
+              <div class="kpi-value" id="kpiCustomerAvgRepeat">0.0%</div>
+              <span class="kpi-sub">RandomForest Estimate</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Customer Segmentation Chart -->
+        <div class="card chart-card">
+          <div class="chart-header">
+            <h4>👥 Customer Cohort Segments</h4>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="customerChart"></canvas>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Output Data Table & Inspection Panel -->
+      <div class="card table-card">
+        <div class="table-header">
+          <h4 id="tableTitle">📋 Detailed Predictions Output</h4>
+          <div class="table-actions">
+            <input type="text" id="tableSearchInput" class="form-input search-input" placeholder="Search table...">
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table" id="outputTable">
+            <thead>
+              <tr id="tableHeadRow">
+                <th>Parameter</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody id="tableBodyRow">
+              <tr>
+                <td colspan="2" class="empty-state">No prediction executed yet. Click a button above.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <span>Socius Forecasting Predictor v1.0 • Odoo ML Engine</span>
+    </footer>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
